@@ -13,11 +13,10 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.httpx_client = httpx.AsyncClient()
     try:
         yield
     finally:
-        await app.state.httpx_client.aclose()
+        pass  # No shared client to close
 
 app = FastAPI(lifespan=lifespan)
 
@@ -30,11 +29,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_httpx_client(app):
-    if not hasattr(app.state, "httpx_client"):
-        app.state.httpx_client = httpx.AsyncClient()
-    return app.state.httpx_client
-
 async def fetch_all_worklogs_for_issue(issue_key, headers):
     """
     Fetch all worklogs for a given issue, handling pagination if needed.
@@ -46,7 +40,8 @@ async def fetch_all_worklogs_for_issue(issue_key, headers):
     while True:
         params = {"startAt": start_at}
         async with semaphore:
-            resp = await get_httpx_client(app).get(url, params=params, headers=headers)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, params=params, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         worklogs = data.get("worklogs", [])
@@ -91,7 +86,8 @@ async def proxy_jira_api(request: Request, rest_of_path: str):
                     page_params = params.copy()
                     page_params["startAt"] = start_at
                     async with semaphore:
-                        response = await get_httpx_client(app).get(target_url, params=page_params, headers=headers)
+                        async with httpx.AsyncClient() as client:
+                            response = await client.get(target_url, params=page_params, headers=headers)
                     response.raise_for_status()
                     data = response.json()
                     worklogs = data.get("worklogs", [])
@@ -113,7 +109,8 @@ async def proxy_jira_api(request: Request, rest_of_path: str):
             elif rest_of_path.endswith("/search"):
                 # Proxy the search, but fetch all worklogs for each issue like Jira-Logs-View
                 async with semaphore:
-                    response = await get_httpx_client(app).get(target_url, params=params, headers=headers)
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(target_url, params=params, headers=headers)
                 response.raise_for_status()
                 data = response.json()
                 issues = data.get("issues", [])
@@ -133,18 +130,22 @@ async def proxy_jira_api(request: Request, rest_of_path: str):
                 )
             else:
                 async with semaphore:
-                    response = await get_httpx_client(app).get(target_url, params=params, headers=headers)
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(target_url, params=params, headers=headers)
         elif method == "POST":
             body = await request.json()
             async with semaphore:
-                response = await get_httpx_client(app).post(target_url, params=params, headers=headers, json=body)
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(target_url, params=params, headers=headers, json=body)
         elif method == "PUT":
             body = await request.json()
             async with semaphore:
-                response = await get_httpx_client(app).put(target_url, params=params, headers=headers, json=body)
+                async with httpx.AsyncClient() as client:
+                    response = await client.put(target_url, params=params, headers=headers, json=body)
         elif method == "DELETE":
             async with semaphore:
-                response = await get_httpx_client(app).delete(target_url, params=params, headers=headers)
+                async with httpx.AsyncClient() as client:
+                    response = await client.delete(target_url, params=params, headers=headers)
         else:
             raise HTTPException(status_code=405, detail="Method not allowed")
         # Return the response
