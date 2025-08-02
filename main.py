@@ -25,7 +25,7 @@ load_dotenv()
 # front-end talks to Jira via personal API token through the proxy route below.
 CLIENT_ID = os.getenv("CLIENT_ID", "yuyKoUDdXh7VLYCBP8w30ZhQwfXw8h2d")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "YOUR_CLIENT_SECRET")
-REDIRECT_URI = "http://localhost:5000"  # OAuth callback goes to backend
+REDIRECT_URI = "https://worklog-viewer.mnv.rocks"  # OAuth callback goes to backend
 
 # Default Jira base URL if the client does not provide one (can be overridden
 # per-request via the `jira_url` query parameter).
@@ -99,7 +99,7 @@ async def root(request: Request):
         
         # Redirect to the same origin with auth data as URL parameters
         # The frontend will handle storing the credentials
-        frontend_url = f"http://localhost:5000?access_token={access_token}&cloud_id={cloud_id}&expiry={expiry_time}"
+        frontend_url = f"https://worklog-viewer.mnv.rocks?access_token={access_token}&cloud_id={cloud_id}&expiry={expiry_time}"
         return RedirectResponse(frontend_url)
 
     # ---- Normal page load ----
