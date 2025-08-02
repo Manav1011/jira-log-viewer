@@ -5,8 +5,6 @@ yarn-debug.log*
 yarn-error.log*
 
 # Build outputs
-dist/
-build/
 
 # Environment variables
 .env
@@ -82,9 +80,6 @@ jspm_packages/
 
 # nuxt.js build output
 .nuxt
-
-# rollup.js default build output
-dist/
 
 # Uncomment the public line in if your project uses Gatsby
 # https://nextjs.org/blog/next-9-1#public-directory-support
