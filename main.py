@@ -23,8 +23,8 @@ load_dotenv()
 # === Config ===
 # If you still want to keep the OAuth flow, leave these here. Currently the
 # front-end talks to Jira via personal API token through the proxy route below.
-CLIENT_ID = os.getenv("ATLASSIAN_CLIENT_ID")
-CLIENT_SECRET = os.getenv("ATLASSIAN_CLIENT_SECRET")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 REDIRECT_URI = os.getenv("BASE_URL", "http://localhost:5000")  # OAuth callback goes to backend
 print(CLIENT_SECRET,CLIENT_ID)
 # Default Jira base URL if the client does not provide one (can be overridden
