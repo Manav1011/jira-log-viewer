@@ -23,10 +23,10 @@ load_dotenv()
 # === Config ===
 # If you still want to keep the OAuth flow, leave these here. Currently the
 # front-end talks to Jira via personal API token through the proxy route below.
-CLIENT_ID = os.getenv("CLIENT_ID", "yuyKoUDdXh7VLYCBP8w30ZhQwfXw8h2d")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET", "YOUR_CLIENT_SECRET")
-REDIRECT_URI = "https://worklog-viewer.mnv.rocks"  # OAuth callback goes to backend
-
+CLIENT_ID = os.getenv("ATLASSIAN_CLIENT_ID")
+CLIENT_SECRET = os.getenv("ATLASSIAN_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("BASE_URL", "http://localhost:5000")  # OAuth callback goes to backend
+print(CLIENT_SECRET,CLIENT_ID)
 # Default Jira base URL if the client does not provide one (can be overridden
 # per-request via the `jira_url` query parameter).
 DEFAULT_JIRA_URL = os.getenv("JIRA_URL_DEFAULT", "https://webelight.atlassian.net")
@@ -95,11 +95,11 @@ async def root(request: Request):
             raise HTTPException(status_code=500, detail="OAuth exchange failed") from exc
 
         # Calculate expiry time (1 hour from now)
-        expiry_time = int(datetime.now().timestamp() + 3600) * 1000  # milliseconds for JS
+        expiry_time = int(datetime.now().timestamp() + 3600) * 1000  # milliseco nds for JS
         
         # Redirect to the same origin with auth data as URL parameters
         # The frontend will handle storing the credentials
-        frontend_url = f"https://worklog-viewer.mnv.rocks?access_token={access_token}&cloud_id={cloud_id}&expiry={expiry_time}"
+        frontend_url = f"{REDIRECT_URI}?access_token={access_token}&cloud_id={cloud_id}&expiry={expiry_time}"
         return RedirectResponse(frontend_url)
 
     # ---- Normal page load ----
@@ -183,10 +183,13 @@ async def api_worklogs(request: Request, year: int, month: int):
         # Auth failed - return 401 to trigger frontend logout
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication expired")
 
-    # Get ALL issues where current user has logged work, then filter by worklog date
-    # This ensures we don't miss any issues where you logged work in this month
-    # even if the issue itself wasn't updated recently
-    jql = "worklogAuthor = currentUser()"
+    # Get ALL issues where user has logged work, then filter by worklog date
+    # Dynamically build JQL for the selected month
+    from calendar import monthrange
+    last_day = monthrange(year, month)[1]
+    start_date = f"{year}-{month:02d}-01"
+    end_date = f"{year}-{month:02d}-{last_day:02d}"
+    jql = f"worklogAuthor = currentUser() AND worklogDate >= {start_date} AND worklogDate <= {end_date}"
     
     search_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search"
     
@@ -201,7 +204,6 @@ async def api_worklogs(request: Request, year: int, month: int):
                 params = {
                     "jql": jql,
                     "startAt": start_at,
-                    "maxResults": max_results,
                     "fields": "summary,worklog",
                 }
                 
@@ -223,7 +225,6 @@ async def api_worklogs(request: Request, year: int, month: int):
                     break
                     
                 start_at += max_results
-                
     except httpx.HTTPStatusError as exc:
         print("Jira search error", exc.response.text)
         # If it's a 401, the token is expired - return 401 to trigger frontend logout
@@ -234,51 +235,52 @@ async def api_worklogs(request: Request, year: int, month: int):
     issues = all_issues
     logs_by_date: dict[str, list] = {}
 
-    for issue in issues:
-        key = issue["key"]
-        summary = issue["fields"]["summary"]
-        # Use search response for most issues, but get complete data for AT-198 since we know it's missing data
-        if key == "AT-198":
-            try:
-                async with httpx.AsyncClient() as client:
-                    full_worklog_resp = await client.get(
-                        f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/issue/{key}/worklog",
-                        headers={"Authorization": f"Bearer {access_token}"},
-                        timeout=15,
-                    )
-                    if full_worklog_resp.status_code == 200:
-                        all_worklogs = full_worklog_resp.json().get("worklogs", [])
-                        # Filter to only worklogs by current user
-                        user_worklogs = [wl for wl in all_worklogs if wl.get("author", {}).get("displayName") == "Manav Shah"]
-                    else:
-                        user_worklogs = issue["fields"]["worklog"]["worklogs"]
-            except:
-                user_worklogs = issue["fields"]["worklog"]["worklogs"]
-        else:
-            # Use the faster search response for all other issues
-            user_worklogs = issue["fields"]["worklog"]["worklogs"]
+    async with httpx.AsyncClient() as client:
+        for issue in issues:
+            key = issue["key"]
+            summary = issue["fields"]["summary"]
+            worklog_field = issue["fields"]["worklog"]
+            user_worklogs = worklog_field["worklogs"]
+            total_worklogs = worklog_field.get("total", len(user_worklogs))
 
-        for wl in user_worklogs:
-            started = wl["started"]
-            
-            try:
-                d = datetime.fromisoformat(started.replace('Z', '+00:00'))
-            except ValueError:
-                # Handle timezone offsets without a colon, e.g. "+0530"
-                d = datetime.strptime(started, "%Y-%m-%dT%H:%M:%S.%f%z")
-                
-            if d.year == year and d.month == month:
-                date_key = d.strftime("%Y-%m-%d")
-                logs_by_date.setdefault(date_key, []).append(
-                    {
-                        "issueKey": key,
-                        "issueSummary": summary,
-                        "timeSpent": wl.get("timeSpent"),
-                        "comment": wl.get("comment"),
-                        "author": wl.get("author", {}).get("displayName"),
-                        "started": started,
-                    }
-                )
+            # If there are more worklogs than returned, fetch all worklogs for this issue
+            if len(user_worklogs) < total_worklogs:
+                issue_id = issue["id"]
+                print(f"[Worklog Fetch] Issue '{key}' (ID: {issue_id}) has {total_worklogs} worklogs, making external call to fetch all.")
+                worklog_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/issue/{issue_id}/worklog"
+                try:
+                    resp = await client.get(
+                        worklog_url,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                    user_worklogs = resp.json().get("worklogs", [])
+                except Exception as exc:
+                    print(f"Failed to fetch all worklogs for issue {key}: {exc}")
+
+            for wl in user_worklogs:
+                started = wl.get("started")
+                if not started:
+                    continue
+                try:
+                    d = datetime.fromisoformat(started.replace('Z', '+00:00'))
+                except ValueError:
+                    # Handle timezone offsets without a colon, e.g. "+0530"
+                    d = datetime.strptime(started, "%Y-%m-%dT%H:%M:%S.%f%z")
+
+                if d.year == year and d.month == month:
+                    date_key = d.strftime("%Y-%m-%d")
+                    logs_by_date.setdefault(date_key, []).append(
+                        {
+                            "issueKey": key,
+                            "issueSummary": summary,
+                            "timeSpent": wl.get("timeSpent"),
+                            "comment": wl.get("comment"),
+                            "author": wl.get("author", {}).get("displayName"),
+                            "started": started,
+                        }
+                    )
 
     return JSONResponse({"worklogData": logs_by_date})
 
