@@ -12,6 +12,41 @@ export default function Dashboard({ onError }) {
   const [currentMonth, setCurrentMonth] = useState(new Date().getMonth() + 1)
   const [isLoading, setIsLoading] = useState(false)
 
+  // Function to parse time spent string into minutes
+  const parseTimeSpent = (timeStr) => {
+    if (!timeStr) return 0
+    
+    let totalMinutes = 0
+    
+    // Match all time units: days, hours, minutes
+    const dayMatch = timeStr.match(/(\d+)d/)
+    const hourMatch = timeStr.match(/(\d+)h/)
+    const minuteMatch = timeStr.match(/(\d+)m/)
+    
+    if (dayMatch) {
+      totalMinutes += parseInt(dayMatch[1]) * 8 * 60 // 8 hours per day
+    }
+    if (hourMatch) {
+      totalMinutes += parseInt(hourMatch[1]) * 60
+    }
+    if (minuteMatch) {
+      totalMinutes += parseInt(minuteMatch[1])
+    }
+    
+    return totalMinutes
+  }
+
+  // Calculate total hours for the month
+  const calculateTotalHours = () => {
+    let totalMinutes = 0
+    Object.values(worklogData).forEach(dayLogs => {
+      dayLogs.forEach(log => {
+        totalMinutes += parseTimeSpent(log.timeSpent)
+      })
+    })
+    return totalMinutes / 60
+  }
+
   useEffect(() => {
     fetchWorklogData(currentYear, currentMonth)
   }, [currentYear, currentMonth])
@@ -91,6 +126,7 @@ export default function Dashboard({ onError }) {
         year={currentYear}
         month={currentMonth}
         worklogData={worklogData}
+        totalHours={calculateTotalHours()}
         onDateSelect={handleDateSelect}
         onMonthChange={handleMonthChange}
         className="lg:col-span-3"

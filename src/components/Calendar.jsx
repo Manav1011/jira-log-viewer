@@ -12,6 +12,7 @@ export default function Calendar({
   year, 
   month, 
   worklogData, 
+  totalHours = 0,
   onDateSelect, 
   onMonthChange, 
   className = '' 
@@ -60,9 +61,14 @@ export default function Calendar({
         >
           <i className="fas fa-chevron-left text-sm"></i>
         </button>
-        <span className="text-lg font-medium">
-          {MONTH_NAMES[month - 1]} {year}
-        </span>
+        <div className="text-center">
+          <div className="text-lg font-medium">
+            {MONTH_NAMES[month - 1]} {year}
+          </div>
+          <div className="text-sm opacity-90 mt-1">
+            Total: {totalHours.toFixed(1)} hours
+          </div>
+        </div>
         <button
           onClick={() => onMonthChange('next')}
           className="bg-white/10 hover:bg-white/20 transition-all p-2 rounded-full w-8 h-8 flex items-center justify-center"
