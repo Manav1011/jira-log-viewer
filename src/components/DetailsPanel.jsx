@@ -137,8 +137,13 @@ export default function DetailsPanel({ selectedDate, onClose, className = '' }) 
           {logs.map((log, index) => (
             <div key={index} className="border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition-colors">
               <div className="flex justify-between items-start mb-2">
-                <h4 className="font-medium text-blue-600">{log.issueKey}</h4>
-                <span className="text-sm text-gray-500">{log.timeSpent}</span>
+                <div className="flex-1">
+                  <h4 className="font-medium text-blue-600">{log.issueKey}</h4>
+                  {log.issueSummary && (
+                    <p className="text-xs text-rose-400 mt-1 line-clamp-2">{log.issueSummary}</p>
+                  )}
+                </div>
+                <span className="text-sm text-gray-500 ml-2 flex-shrink-0">{log.timeSpent}</span>
               </div>
               {log.comment && (
                 <p className="text-sm text-gray-600 line-clamp-2">{extractCommentText(log.comment)}</p>
