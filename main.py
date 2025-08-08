@@ -78,7 +78,10 @@ async def root(request: Request):
                     timeout=20,
                 )
                 token_resp.raise_for_status()
-                access_token = token_resp.json()["access_token"]
+                token_resp_json = token_resp.json()
+                print(token_resp_json)
+                access_token = token_resp_json["access_token"]
+                refresh_token = token_resp_json.get("refresh_token")
 
                 resources_resp = await client.get(
                     "https://api.atlassian.com/oauth/token/accessible-resources",
@@ -99,7 +102,12 @@ async def root(request: Request):
         
         # Redirect to the same origin with auth data as URL parameters
         # The frontend will handle storing the credentials
-        frontend_url = f"{REDIRECT_URI}?access_token={access_token}&cloud_id={cloud_id}&expiry={expiry_time}"
+        frontend_url = (
+            f"{REDIRECT_URI}?access_token={access_token}"
+            f"&cloud_id={cloud_id}"
+            f"&expiry={expiry_time}"
+            f"&refresh_token={refresh_token}" if refresh_token else ""
+        )
         return RedirectResponse(frontend_url)
 
     # ---- Normal page load ----
@@ -117,7 +125,7 @@ async def login():
     authorize_url = (
         "https://auth.atlassian.com/authorize?"
         f"audience=api.atlassian.com&client_id={CLIENT_ID}"
-        "&scope=read%3Ajira-work"
+        "&scope=offline_access%20read:jira-work"
         f"&redirect_uri={REDIRECT_URI}"
         f"&state={state}&response_type=code&prompt=consent"
     )
@@ -138,29 +146,122 @@ async def api_logout():
     """API endpoint to logout - just return success, frontend handles localStorage cleanup."""
     return {"success": True, "message": "Logged out successfully"}
 
+@app.post("/api/refresh-token")
+async def refresh_access_token(request: Request):
+    """Refresh the access token using the refresh token."""
+    try:
+        data = await request.json()
+        refresh_token = data.get("refresh_token")
+        
+        if not refresh_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Refresh token is required"
+            )
+        
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                "https://auth.atlassian.com/oauth/token",
+                json={
+                    "grant_type": "refresh_token",
+                    "client_id": CLIENT_ID,
+                    "client_secret": CLIENT_SECRET,
+                    "refresh_token": refresh_token
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=20,
+            )
+            token_resp.raise_for_status()
+            token_data = token_resp.json()
+            
+            # Calculate new expiry time
+            expiry_time = int(datetime.now().timestamp() + token_data["expires_in"]) * 1000
+            
+            return {
+                "access_token": token_data["access_token"],
+                "refresh_token": token_data.get("refresh_token", refresh_token),  # Might get a new refresh token
+                "expiry": expiry_time
+            }
+            
+    except httpx.HTTPStatusError as exc:
+        print("Token refresh error:", exc.response.text)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Failed to refresh token"
+        ) from exc
+    except Exception as exc:
+        print("Token refresh error:", str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        ) from exc
+
 
 # ---------------------------------------------------------------------------
 #  API endpoints for authenticated SPA (status, worklogs)
 # ---------------------------------------------------------------------------
 
-def _require_auth(request: Request) -> tuple[str, str]:
+async def _require_auth(request: Request) -> tuple[str, str]:
     # First try to get from Authorization header (for frontend API calls)
     auth_header = request.headers.get("Authorization")
+    refresh_token = request.headers.get("X-Refresh-Token")  # Get refresh token from header
+    cloud_id = None
+    token = None
+
     if auth_header and auth_header.startswith("Bearer "):
         # Format: "Bearer access_token:cloud_id"
         try:
             token_and_cloud = auth_header[7:]  # Remove "Bearer "
             if ":" in token_and_cloud:
                 token, cloud_id = token_and_cloud.split(":", 1)
-                return token, cloud_id
         except:
             pass
     
     # Fallback to cookies (for direct backend access)
-    token = request.cookies.get("access_token")
-    cloud_id = request.cookies.get("cloud_id")
     if not token or not cloud_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        token = request.cookies.get("access_token")
+        cloud_id = request.cookies.get("cloud_id")
+    
+    if not token or not cloud_id:
+        # If refresh token is available, try to refresh
+        if refresh_token:
+            try:
+                # Get a new access token
+                async with httpx.AsyncClient() as client:
+                    # First get new access token
+                    refresh_resp = await client.post(
+                        f"{REDIRECT_URI}/api/refresh-token",
+                        json={"refresh_token": refresh_token},
+                        timeout=20
+                    )
+                    refresh_resp.raise_for_status()
+                    refresh_data = refresh_resp.json()
+                    new_access_token = refresh_data["access_token"]
+                    
+                    # Then get cloud_id with new access token
+                    resources_resp = await client.get(
+                        "https://api.atlassian.com/oauth/token/accessible-resources",
+                        headers={"Authorization": f"Bearer {new_access_token}"},
+                        timeout=20,
+                    )
+                    resources_resp.raise_for_status()
+                    resources = resources_resp.json()
+                    if not resources:
+                        raise HTTPException(status_code=400, detail="No Jira Cloud resources accessible")
+                    new_cloud_id = resources[0]["id"]
+                    
+                    return new_access_token, new_cloud_id
+            except Exception as exc:
+                print(f"Token refresh failed: {exc}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication failed and token refresh failed"
+                )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Not authenticated"
+        )
+    
     return token, cloud_id
 
 
@@ -168,7 +269,7 @@ def _require_auth(request: Request) -> tuple[str, str]:
 async def api_status(request: Request):
     """Return auth status."""
     try:
-        _require_auth(request)
+        await _require_auth(request)
         return {"authenticated": True}
     except HTTPException:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
@@ -178,7 +279,7 @@ async def api_status(request: Request):
 async def api_worklogs(request: Request, year: int, month: int):
     """Return all worklog entries for the specified month (1-12)."""
     try:
-        access_token, cloud_id = _require_auth(request)
+        access_token, cloud_id = await _require_auth(request)
     except HTTPException:
         # Auth failed - return 401 to trigger frontend logout
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication expired")
@@ -226,6 +327,7 @@ async def api_worklogs(request: Request, year: int, month: int):
                     
                 start_at += max_results
     except httpx.HTTPStatusError as exc:
+        print(exc.response.status_code, exc.response.text)
         print("Jira search error", exc.response.text)
         # If it's a 401, the token is expired - return 401 to trigger frontend logout
         if exc.response.status_code == 401:

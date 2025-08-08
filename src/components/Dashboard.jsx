@@ -56,6 +56,7 @@ export default function Dashboard({ onError }) {
     try {
       const token = localStorage.getItem('jira_access_token')
       const cloudId = localStorage.getItem('jira_cloud_id')
+      const refreshToken = localStorage.getItem('jira_refresh_token')
       
       if (!token || !cloudId) {
         throw new Error('No authentication credentials found')
@@ -64,17 +65,47 @@ export default function Dashboard({ onError }) {
       const response = await fetch(`/api/worklogs?year=${year}&month=${month}`, {
         headers: {
           'Authorization': `Bearer ${token}:${cloudId}`,
+          'X-Refresh-Token': refreshToken || '',
           'Content-Type': 'application/json'
         },
         credentials: 'include'
       })
       
       if (!response.ok) {
-        // If unauthorized, logout the user and redirect to login
         if (response.status === 401) {
-          console.log('Token expired, logging out user')
-          logout()
-          return
+          // Try to refresh token
+          try {
+            const refreshToken = localStorage.getItem('jira_refresh_token')
+            if (!refreshToken) {
+              throw new Error('No refresh token available')
+            }
+
+            const refreshResponse = await fetch('/api/refresh-token', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ refresh_token: refreshToken })
+            })
+
+            if (!refreshResponse.ok) {
+              throw new Error('Token refresh failed')
+            }
+
+            const refreshData = await refreshResponse.json()
+            localStorage.setItem('jira_access_token', refreshData.access_token)
+            localStorage.setItem('jira_token_expiry', refreshData.expiry)
+            if (refreshData.refresh_token) {
+              localStorage.setItem('jira_refresh_token', refreshData.refresh_token)
+            }
+
+            // Retry the original request with new token
+            return fetchWorklogData(year, month)
+          } catch (refreshError) {
+            console.error('Token refresh failed:', refreshError)
+            logout()
+            return
+          }
         }
         throw new Error(`Failed to fetch worklog data: ${response.status}`)
       }
