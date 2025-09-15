@@ -292,7 +292,7 @@ async def api_worklogs(request: Request, year: int, month: int):
     end_date = f"{year}-{month:02d}-{last_day:02d}"
     jql = f"worklogAuthor = currentUser() AND worklogDate >= {start_date} AND worklogDate <= {end_date}"
     
-    search_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search"
+    search_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql"
     
     # Paginate through ALL issues to ensure we don't miss any worklogs
     all_issues = []
@@ -401,7 +401,7 @@ async def jira_api_proxy(
     """Lightweight pass-through that adds Basic-Auth and streams the response.
 
     The front-end calls paths like:
-        /jira-api/rest/api/3/search?jql=...&fields=worklog&auth=<base64>
+        /jira-api/rest/api/3/search/jql?jql=...&fields=worklog&auth=<base64>
 
     We reconstruct the target URL using the provided *jira_url* or a default
     value, forward the request, and relay the response unchanged.  Only GET is
